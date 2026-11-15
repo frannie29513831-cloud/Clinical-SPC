@@ -128,23 +128,23 @@
           </div>
         </div>
 
-        <!-- 2. 基準線鎖定功能 (Phase I / Phase II Baseline Lock) -->
+        <!-- 2. 改善前後分期比較 (Phase I / Phase II) -->
         <div class="lg:col-span-4 space-y-2.5 border-t lg:border-t-0 lg:border-l border-slate-200 pt-4 lg:pt-0 lg:pl-6">
-          <label class="block text-xs font-bold uppercase tracking-wider text-slate-500">2. 基準期鎖定 (Phase I / II Baseline)</label>
+          <label class="block text-xs font-bold uppercase tracking-wider text-slate-500">2. 改善前後分期比較 (Phase I / Phase II)</label>
           <div class="flex items-center gap-2.5 pt-1">
             <input type="checkbox" id="baselineLockCheck" onchange="toggleBaselineLock()" class="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer">
             <label for="baselineLockCheck" class="text-sm font-semibold text-slate-800 cursor-pointer select-none">
-              啟用基準期鎖定 (Phase I Baseline Lock)
+              啟用改善前後分期比較 (Phase I / II)
             </label>
           </div>
           
           <div id="baselineInputGroup" class="flex items-center gap-2 pt-1 opacity-50 pointer-events-none transition">
-            <span class="text-xs font-medium text-slate-600">基準期：前</span>
+            <span class="text-xs font-medium text-slate-600">改善前期：前</span>
             <input type="number" id="baselineCount" value="12" min="2" max="100" onchange="recalculateAndRender()" class="w-20 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm font-bold text-center text-blue-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30">
-            <span class="text-xs font-medium text-slate-600">筆數據為基準期 (Phase I)</span>
+            <span class="text-xs font-medium text-slate-600">筆數據為改善前期 (Phase I)</span>
           </div>
           <p class="text-[11px] text-slate-500 leading-tight">
-            * 取消勾選時為全期動態重算；勾選時鎖定前 N 期數據計算 Phase I 界限，後續期數則以改善期數據獨立計算 Phase II 中心線與管制界限。
+            * 取消勾選時為全期動態重算；勾選時以前 N 期數據計算改善前期 (Phase I) 界限，後續期數則以改善後期 (Phase II) 數據獨立計算中心線與管制界限。
           </p>
 
           <!-- 自訂穩定平均值 (管制用管制圖標準中心線) -->
@@ -779,7 +779,7 @@
       if (isBaselineLocked) {
         const inputBase = parseInt(document.getElementById('baselineCount').value, 10);
         if (isNaN(inputBase) || inputBase < 2) {
-          return { error: "基準期筆數至少需要 2 筆數據！" };
+          return { error: "改善前期筆數至少需要 2 筆數據！" };
         }
         baseLength = Math.min(inputBase, effectiveN);
       }
@@ -893,19 +893,21 @@
           }
         } else if (chartType === 'g') {
           // 幾何分佈罕見事件管制圖 (g chart)：針對間隔天數 g_i (對應 currentData[i + 1].num)
-          // 標準 SPC 公式：CL = ḡ, sigma = sqrt(ḡ * (ḡ + 1)), UCL = ḡ + 3*sigma, LCL = max(0, ḡ - 3*sigma)
+          // 依據醫療品管標準公式：CL = ln(2) * ḡ (約 0.693 * ḡ，理論中位數), UCL = ḡ + 3*sqrt(ḡ*(ḡ+1)), LCL = max(0, ḡ - 3*sqrt(ḡ*(ḡ+1)))
           let sumG = 0;
           for (let i = start; i < end; i++) {
             sumG += currentData[i + 1].num;
           }
-          const gBar = (isCustomCl && customClVal !== null) ? customClVal : (sumG / segLen);
+          const avgG = sumG / segLen;
+          const clVal = (isCustomCl && customClVal !== null) ? customClVal : (Math.LN2 * avgG);
+          const gBar = (isCustomCl && customClVal !== null) ? (customClVal / Math.LN2) : avgG;
           const s = Math.sqrt(gBar * (gBar + 1));
           const uclVal = gBar + 3 * s;
           const lclVal = Math.max(0, gBar - 3 * s);
 
           for (let i = start; i < end; i++) {
             x[i] = currentData[i + 1].num;
-            cl[i] = gBar;
+            cl[i] = clVal;
             sigma[i] = s;
             ucl[i] = uclVal;
             lcl[i] = lclVal;
@@ -1129,16 +1131,20 @@
             }
           }
 
-          // Rule 8：連續 8 點落在 Zone C 以外（兩側混合均 > 1σ，僅在當前階段內檢定）
+          // Rule 8：連續 8 點落在中心線兩側，且沒有任何一點落在 Zone C (1σ) 內（僅在當前階段內檢定）
           if (activeRules[8] && (i - start) >= 7) {
             let allOutsideZoneC = true;
+            let hasAbove = false;
+            let hasBelow = false;
             for (let k = i - 7; k <= i; k++) {
               if (Math.abs(zScores[k]) <= 1) {
                 allOutsideZoneC = false;
                 break;
               }
+              if (zScores[k] > 1) hasAbove = true;
+              if (zScores[k] < -1) hasBelow = true;
             }
-            if (allOutsideZoneC) {
+            if (allOutsideZoneC && hasAbove && hasBelow) {
               for (let k = i - 7; k <= i; k++) addViolation(k, 8);
             }
           }
@@ -1190,7 +1196,7 @@
       for (let i = 0; i < rVals.length; i++) {
         if (rVals[i] === null || rVals[i] === undefined) continue;
         const isOut = rVals[i] > rUcl[i] || rVals[i] < rLcl[i];
-        const phaseLabel = (hasTwoPhases && i >= baseLength) ? "Phase II (改善期)" : (hasTwoPhases ? "Phase I (基準期)" : "全期");
+        const phaseLabel = (hasTwoPhases && i >= baseLength) ? "Phase II (改善後期)" : (hasTwoPhases ? "Phase I (改善前期)" : "全期");
         const zText = rZScores[i] !== null ? `${rZScores[i].toFixed(2)}σ` : 'N/A';
 
         let hoverText = `<b>${labels[i]}</b> (${phaseLabel})<br>` +
@@ -1370,7 +1376,7 @@
         const clDisplay = formatMetricValue(cl[i]);
         const uclDisplay = formatMetricValue(ucl[i]);
         const lclDisplay = formatMetricValue(lcl[i]);
-        const phaseLabel = (hasTwoPhases && i >= baseLength) ? "Phase II (改善期)" : (hasTwoPhases ? "Phase I (基準期)" : "全期");
+        const phaseLabel = (hasTwoPhases && i >= baseLength) ? "Phase II (改善後期)" : (hasTwoPhases ? "Phase I (改善前期)" : "全期");
 
         let hoverText = `<b>${labels[i]}</b> (${phaseLabel})<br>` +
                         `指標值: ${valDisplay}<br>` +
